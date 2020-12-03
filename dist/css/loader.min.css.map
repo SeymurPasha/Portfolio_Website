@@ -1,0 +1,9 @@
+{
+    "version": 3,
+    "mappings": "AAAA,AAAA,OAAO,AAAC,CACR,KAAK,CAAE,KAAK,CACZ,MAAM,CAAE,KAAK,CACb,gBAAgB,CAAE,OAAO,CACzB,OAAO,CAAE,IAAI,CACb,eAAe,CAAE,MAAM,CACvB,WAAW,CAAE,MAAM,CAClB",
+    "sources": [
+        "../../frontend/src/sass/Components/loader.scss"
+    ],
+    "names": [],
+    "file": "loader.min.css"
+}

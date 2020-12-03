@@ -1,0 +1,9 @@
+{
+    "version": 3,
+    "mappings": "",
+    "sources": [
+        "../../frontend/src/sass/Components/breakpoints.scss"
+    ],
+    "names": [],
+    "file": "breakpoints.min.css"
+}
