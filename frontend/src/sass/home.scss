@@ -1,0 +1,55 @@
+.home {
+    position: relative;
+}
+.text1 {
+    position: absolute;
+    color: white;
+    top: 30%;
+    left: 15%;
+}   
+.text2 {
+    position: absolute;
+    color: white;
+    top: 35%;
+    left: 15%;
+}   
+.typewriter  {
+    overflow: hidden;
+    white-space: nowrap;
+    margin: 0 auto;
+    letter-spacing: 0.1em;
+    -webkit-animation-name: typing;
+    animation-name: typing;
+    -webkit-animation-duration: 2.5s;
+    animation-duration: 2.5s;
+    -webkit-animation-timing-function: 60, end;
+    animation-timing-function: 60, end;
+}
+.show {
+    display: block;
+}
+ 
+.hide {
+    display: none;
+}
+@-webkit-keyframes typing {
+    from {
+        width: 0;
+   }
+    to {
+        width: 70%;
+   }
+}
+@keyframes typing {
+    from {
+        width: 0;
+   }
+    to {
+        width: 70%;
+   }
+}
+
+.home video {
+    width: 100%;
+    height: 100%;
+}

@@ -1,21 +1,16 @@
 import React, { Component } from 'react'
-import Loader from './Components/Loader'
-import NavBar from './Components/NavBar'
+// import Loader from './Components/Loader'
+// import NavBar from './Components/NavBar'
 import Home from './Components/Home'
-import About from './Components/About'
-import Skills from './Components/Skills'
-import Contact from './Components/Contact'
-import Projects from './Components/Projects'
-import Footer from './Components/Footer'
-import Download from './Components/Download'
+// import About from './Components/About'
+// import Skills from './Components/Skills'
+// import Contact from './Components/Contact'
+// import Projects from './Components/Projects'
+// import Footer from './Components/Footer'
+// import Download from './Components/Download'
 
 import axios from 'axios'
 import './sass/main.scss'
-
-
-
-
-
 
  class App extends Component {
   constructor(props) {
@@ -83,19 +78,19 @@ import './sass/main.scss'
 
   render() {
 
-    if(this.state.loading) {
-    return <Loader />
-    }
+    // if(this.state.loading) {
+    // return <Loader />
+    // }
     return (
       <div className = "App">
-      <Home part1Active = {this.state.part1Active} part2Active = {this.state.part2Active} showArrow = {this.state.showArrow} />
-      <NavBar />
+       <Home part1Active = {this.state.part1Active} part2Active = {this.state.part2Active} showArrow = {this.state.showArrow} />
+     {/* <NavBar />
       <About transform = {this.state.transform} />
       <Skills />
       <Projects skill1 = {this.state.skill1} />
       <Contact sendMessage = {this.sendMessage} />
       <Download getResume = {this.getResume}/>
-      <Footer />
+      <Footer /> */}
       </div>
     )
   }
