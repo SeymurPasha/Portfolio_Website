@@ -1,2 +1,12 @@
+#root, body {
+margin: 0;
+}
+
+
+.App {
+background-color: #333333;
+}
+
 @import './home.scss';
 @import './arrow.scss';
+@import './about.scss';
