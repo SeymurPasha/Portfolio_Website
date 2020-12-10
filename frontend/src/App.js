@@ -3,7 +3,7 @@ import React, { Component } from 'react'
 // import NavBar from './Components/NavBar'
 import Home from './Components/Home'
 import About from './Components/About'
-// import Skills from './Components/Skills'
+import Skills from './Components/Skills'
 // import Contact from './Components/Contact'
 // import Projects from './Components/Projects'
 // import Footer from './Components/Footer'
@@ -86,7 +86,7 @@ import './sass/main.scss'
        <Home part1Active = {this.state.part1Active} part2Active = {this.state.part2Active} showArrow = {this.state.showArrow} />
       {/* <NavBar /> */}
       <About transform = {this.state.transform} />
-      {/* <Skills /> */}
+      <Skills />
       {/* <Projects skill1 = {this.state.skill1} /> */}
       {/* <Contact sendMessage = {this.sendMessage} /> */}
       {/* <Download getResume = {this.getResume}/> */}

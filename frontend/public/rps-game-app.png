@@ -1,298 +1,0 @@
-'use strict';
-
-/**
- * The **ReadPreference** class is a class that represents a MongoDB ReadPreference and is
- * used to construct connections.
- * @class
- * @param {string} mode A string describing the read preference mode (primary|primaryPreferred|secondary|secondaryPreferred|nearest)
- * @param {array} tags The tags object
- * @param {object} [options] Additional read preference options
- * @param {number} [options.maxStalenessSeconds] Max secondary read staleness in seconds, Minimum value is 90 seconds.
- * @param {object} [options.hedge] Server mode in which the same query is dispatched in parallel to multiple replica set members.
- * @param {boolean} [options.hedge.enabled] Explicitly enable or disable hedged reads.
- * @see https://docs.mongodb.com/manual/core/read-preference/
- * @return {ReadPreference}
- */
-const ReadPreference = function(mode, tags, options) {
-  if (!ReadPreference.isValid(mode)) {
-    throw new TypeError(`Invalid read preference mode ${mode}`);
-  }
-
-  // TODO(major): tags MUST be an array of tagsets
-  if (tags && !Array.isArray(tags)) {
-    console.warn(
-      'ReadPreference tags must be an array, this will change in the next major version'
-    );
-
-    const tagsHasMaxStalenessSeconds = typeof tags.maxStalenessSeconds !== 'undefined';
-    const tagsHasHedge = typeof tags.hedge !== 'undefined';
-    const tagsHasOptions = tagsHasMaxStalenessSeconds || tagsHasHedge;
-    if (tagsHasOptions) {
-      // this is likely an options object
-      options = tags;
-      tags = undefined;
-    } else {
-      tags = [tags];
-    }
-  }
-
-  this.mode = mode;
-  this.tags = tags;
-  this.hedge = options && options.hedge;
-
-  options = options || {};
-  if (options.maxStalenessSeconds != null) {
-    if (options.maxStalenessSeconds <= 0) {
-      throw new TypeError('maxStalenessSeconds must be a positive integer');
-    }
-
-    this.maxStalenessSeconds = options.maxStalenessSeconds;
-
-    // NOTE: The minimum required wire version is 5 for this read preference. If the existing
-    //       topology has a lower value then a MongoError will be thrown during server selection.
-    this.minWireVersion = 5;
-  }
-
-  if (this.mode === ReadPreference.PRIMARY) {
-    if (this.tags && Array.isArray(this.tags) && this.tags.length > 0) {
-      throw new TypeError('Primary read preference cannot be combined with tags');
-    }
-
-    if (this.maxStalenessSeconds) {
-      throw new TypeError('Primary read preference cannot be combined with maxStalenessSeconds');
-    }
-
-    if (this.hedge) {
-      throw new TypeError('Primary read preference cannot be combined with hedge');
-    }
-  }
-};
-
-// Support the deprecated `preference` property introduced in the porcelain layer
-Object.defineProperty(ReadPreference.prototype, 'preference', {
-  enumerable: true,
-  get: function() {
-    return this.mode;
-  }
-});
-
-/*
- * Read preference mode constants
- */
-ReadPreference.PRIMARY = 'primary';
-ReadPreference.PRIMARY_PREFERRED = 'primaryPreferred';
-ReadPreference.SECONDARY = 'secondary';
-ReadPreference.SECONDARY_PREFERRED = 'secondaryPreferred';
-ReadPreference.NEAREST = 'nearest';
-
-const VALID_MODES = [
-  ReadPreference.PRIMARY,
-  ReadPreference.PRIMARY_PREFERRED,
-  ReadPreference.SECONDARY,
-  ReadPreference.SECONDARY_PREFERRED,
-  ReadPreference.NEAREST,
-  null
-];
-
-/**
- * Construct a ReadPreference given an options object.
- *
- * @param {object} options The options object from which to extract the read preference.
- * @return {ReadPreference}
- */
-ReadPreference.fromOptions = function(options) {
-  if (!options) return null;
-  const readPreference = options.readPreference;
-  if (!readPreference) return null;
-  const readPreferenceTags = options.readPreferenceTags;
-  const maxStalenessSeconds = options.maxStalenessSeconds;
-  if (typeof readPreference === 'string') {
-    return new ReadPreference(readPreference, readPreferenceTags);
-  } else if (!(readPreference instanceof ReadPreference) && typeof readPreference === 'object') {
-    const mode = readPreference.mode || readPreference.preference;
-    if (mode && typeof mode === 'string') {
-      return new ReadPreference(mode, readPreference.tags, {
-        maxStalenessSeconds: readPreference.maxStalenessSeconds || maxStalenessSeconds,
-        hedge: readPreference.hedge
-      });
-    }
-  }
-
-  return readPreference;
-};
-
-/**
- * Resolves a read preference based on well-defined inheritance rules. This method will not only
- * determine the read preference (if there is one), but will also ensure the returned value is a
- * properly constructed instance of `ReadPreference`.
- *
- * @param {Collection|Db|MongoClient} parent The parent of the operation on which to determine the read
- * preference, used for determining the inherited read preference.
- * @param {object} options The options passed into the method, potentially containing a read preference
- * @returns {(ReadPreference|null)} The resolved read preference
- */
-ReadPreference.resolve = function(parent, options) {
-  options = options || {};
-  const session = options.session;
-
-  const inheritedReadPreference = parent && parent.readPreference;
-
-  let readPreference;
-  if (options.readPreference) {
-    readPreference = ReadPreference.fromOptions(options);
-  } else if (session && session.inTransaction() && session.transaction.options.readPreference) {
-    // The transactionâ€™s read preference MUST override all other user configurable read preferences.
-    readPreference = session.transaction.options.readPreference;
-  } else if (inheritedReadPreference != null) {
-    readPreference = inheritedReadPreference;
-  } else {
-    readPreference = ReadPreference.primary;
-  }
-
-  return typeof readPreference === 'string' ? new ReadPreference(readPreference) : readPreference;
-};
-
-/**
- * Replaces options.readPreference with a ReadPreference instance
- */
-ReadPreference.translate = function(options) {
-  if (options.readPreference == null) return options;
-  const r = options.readPreference;
-
-  if (typeof r === 'string') {
-    options.readPreference = new ReadPreference(r);
-  } else if (r && !(r instanceof ReadPreference) && typeof r === 'object') {
-    const mode = r.mode || r.preference;
-    if (mode && typeof mode === 'string') {
-      options.readPreference = new ReadPreference(mode, r.tags, {
-        maxStalenessSeconds: r.maxStalenessSeconds
-      });
-    }
-  } else if (!(r instanceof ReadPreference)) {
-    throw new TypeError('Invalid read preference: ' + r);
-  }
-
-  return options;
-};
-
-/**
- * Validate if a mode is legal
- *
- * @method
- * @param {string} mode The string representing the read preference mode.
- * @return {boolean} True if a mode is valid
- */
-ReadPreference.isValid = function(mode) {
-  return VALID_MODES.indexOf(mode) !== -1;
-};
-
-/**
- * Validate if a mode is legal
- *
- * @method
- * @param {string} mode The string representing the read preference mode.
- * @return {boolean} True if a mode is valid
- */
-ReadPreference.prototype.isValid = function(mode) {
-  return ReadPreference.isValid(typeof mode === 'string' ? mode : this.mode);
-};
-
-const needSlaveOk = ['primaryPreferred', 'secondary', 'secondaryPreferred', 'nearest'];
-
-/**
- * Indicates that this readPreference needs the "slaveOk" bit when sent over the wire
- * @method
- * @return {boolean}
- * @see https://docs.mongodb.com/manual/reference/mongodb-wire-protocol/#op-query
- */
-ReadPreference.prototype.slaveOk = function() {
-  return needSlaveOk.indexOf(this.mode) !== -1;
-};
-
-/**
- * Are the two read preference equal
- * @method
- * @param {ReadPreference} readPreference The read preference with which to check equality
- * @return {boolean} True if the two ReadPreferences are equivalent
- */
-ReadPreference.prototype.equals = function(readPreference) {
-  return readPreference.mode === this.mode;
-};
-
-/**
- * Return JSON representation
- * @method
- * @return {Object} A JSON representation of the ReadPreference
- */
-ReadPreference.prototype.toJSON = function() {
-  const readPreference = { mode: this.mode };
-  if (Array.isArray(this.tags)) readPreference.tags = this.tags;
-  if (this.maxStalenessSeconds) readPreference.maxStalenessSeconds = this.maxStalenessSeconds;
-  if (this.hedge) readPreference.hedge = this.hedge;
-  return readPreference;
-};
-
-/**
- * Primary read preference
- * @member
- * @type {ReadPreference}
- */
-ReadPreference.primary = new ReadPreference('primary');
-/**
- * Primary Preferred read preference
- * @member
- * @type {ReadPreference}
- */
-ReadPreference.primaryPreferred = new ReadPreference('primaryPreferred');
-/**
- * Secondary read preference
- * @member
- * @type {ReadPreference}
- */
-ReadPreference.secondary = new ReadPreference('secondary');
-/**
- * Secondary Preferred read preference
- * @member
- * @type {ReadPreference}
- */
-ReadPreference.secondaryPreferred = new ReadPreference('secondaryPreferred');
-/**
- * Nearest read preference
- * @member
- * @type {ReadPreference}
- */
-ReadPreference.nearest = new ReadPreference('nearest');
-
-module.exports = ReadPreference;
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      2cd¢]”˜N-¤'çA	¼|ÁÄç‹KšfH-ŞË&fEt•Àø¯µô"‡$ÎMÖ˜ú ï„ÆãG{›¹Bç»¦¶–e9K&ºè?¬tÖb‚_‡=öÌtbv2ş™Ç:Õ+´A¯'›_y-ÅÇééŒiÈA«cAàWÏ*óä_Ì}(£•ie{÷±Ùñ÷á˜¡·×Á ®ù’Ø!†—;»š!µ›©ÅcYÈSª÷½BÈ‡´&É²†Ñèlâ:8IJUº’~H;‘´;äñ|ßªóCódêb,ıİ~ôø÷ˆ DybÇu I˜a’.,)ø¡#ªş^ñÇî'#Á17Ht†É°á˜Èl1Z[ŒèZÁÇ*OçQñ¢ıM«üÓc¹wb"@y!ïÓ…à¼–Ñ”•v=«¨XoSÂ*ëÚÃgú­ÜµËƒ´ÑŠÍã|•Kõ§øa«²iÓRÒª‰QÛñòê²sàlÙÃT€OD¸¥uQÂV2ò÷¿É¯Ò¨Ö¹†®ë	Ü§^˜$XÏ)»¾”¼IP'=¿‰;6}ÜÔw×¬xÛë¥šW‘°xGäB>M.®ÕÅi?5J9ëuVzoÙNÅª>æÈ‘ ‰z¤MÅ]ìú3­ıË]K!ø°·j„êİÆÎV|`ôº÷ÊútzÁSÚf®ÁãŠM5ô…%Á)Â*Äûjóó!4á×`0ßiŞÃ3èhøŞhÇRˆÙqøx…­ÊL|E¸$80dÌ]«.3u¢ö½ô‘l›a;¦…w©†cï£æ3D«Câ &¨¼«NoiFÔÁGY“ö*fYuI^etšr10½(äÊìä•Ãèf”ÆˆH	’¤Î@¿Éc¡™ïÖ^_G›“'BÓ;Xæ:*4S=iÛÈÉú.JŞãõ²ò>ö6PE¥H~£$óy'ëSRË!Ş¥Z},ncrj–j%o¬ƒ³TJÓ”çˆ±™O~•Øg{®à˜àˆŸô‰£0§´®©ş	ùŠÍjîØ5Œãßå¤2^b$üôµSÖn5¶;úÑñëèRGğ:€MÂZİã»6òç]{XvË)÷Ìµ#|Ú¶wó;uú¥† øĞÜ°õŞULU9C>×É )…if¤¹‰ú€ß
-Ê²½z_FkæÌ#-Vœ%~ğ™T©“Šó,†Ÿê¦8SµÀ;Æ)á¡Tÿ}CJÈš8ß5èP¥o E,f¬<7†ï
-›oµ·¡¸)˜ÜŠĞ‰¦Öóµğã»£*k:¥ägg<‰ğ}†Ào ½r«KJ	œˆ3F”¤ÔS5å—âW/«6D×hìZVÛ7h¢Ç¥oŞ 
-bmA9¬åBòĞS°)˜pÛD¡¡#ŒiÎ¿
-
-ÏÑNÊGõØ0W¡6[¨ø´Â.Š›5‹G"¡ :`6Ûx6ÂÃW†O­ŸkágYFœ'³O8daH¶´oÛ§:?pd?FÉP·ÎÆføE¦>`u§Äù¹­÷rğíkÀ<èï‹·½èOÆ÷ÛçjFAÆåĞŸkÈ«Ñ…é×7BtK+Œ*²{m%Úq7¤õ.eş0ÆÏmÀYÃ–‡Ò“YÛY‚ÏëšR,È$¡7Aş˜ÜämĞ¯İ>Â»Ú #IÎÇ6fÓ*ÄcæÛgä"´gÒQVÑ|sœ4»®pTEq-+sªäPXBQ$ £â@¹ÿ2©öL7v^>&|*€’m|¦<D9oÚÔá“Y¶êÃºBæ\;õüg2»³ñ¸^ƒ°áÓ‹8f™W§-ûÚE ÿÛ½:Ø?U”b8F*^nÃà§Íó,IëËßÂNq”õÈ›A'¦>;òÙÍóD…Ù,ù¸ÉÍY¾SR7ıåŞ´º€5ÑtıÊ‡~ÀÈ†pÈÜo7B«à&±†mR¨áÒ67¦w4~'œ1ÄÚ|1- Ö†)õ|±}Ş]dµhTfğ¼ŞÛ\XŒåÄäeàIÖ©W-ªÉË‘‡“{	ÇÜ©eIòV­¤°B…L¾W¡èE‹*n~ˆ…ÕÍÔ4}DtŸe¼ &–s>HŠ-¸Ô?¼ıl&N?û=òğ&óZ—*ïøÏ¨¨’4éaPAx+ĞÎ,E«ù¹Úº =†^÷~Õ“OJwî´Ş@Ó Bá-~Ó‡S“nÜ®ınLU0öC\¤×_Ş0V\®œ„Ä?I×ÀoZXşß÷ò{^¥|Î¡X9åÆJ|ÎĞg~Ù&ÎMÄj V…¼é±6¶ĞÛµşÆŸÆ|ˆIDğlÎÖT‡]=x¶]ÈnW<†áƒ-iÎ¡áPéF‰¤ ^Ós¸2Ê+MV…yÆ–™¢ğ*¾MeÅ:ìÅ€ÓçzvFí…èH©NO©”id·
-ú‡ÁZùÙ¿mP±ù‹ı},ü[­NPº`ØºİU2‰*ÀÛìlŞ-á{Ş©È¯ŞöW¥¥‰ÙX/‚Å5ÒJıjÕ´˜Ób	Ú¹?øß*õ5±­7MOx#œÔ%±D¬ˆ©`”Âó«aîáù*-³úÔ3ºc°sVÿKÅøô?ë™zçØ²ŠptÖ¾Í÷uXşÒRV€Ø!º8Åh…ü„iTóµŠš½ô]ÒÜU1ó„ÒsO¯bO{¼Meğ¹¢ÇWËÈÄO…wåñ¬Sª{M¨ê™³IÇûª"˜Ù!›ÖyamÏ	Ç xãV	øYøŸ$6FHÎV0ƒPBGÀ‡ÜÆ¼È¬2~&«ˆ–GIó=ùgÆŒ °Ä’«q»f¦°Á0»d¯âƒ^¥*#>ƒ/«…ÆÒFqØvwcQC]G[‰çº/3
-­ö6²¬d8ãÒÃÅ	Èug ‡:¢³i¦ íĞ•“Š%J	ä˜3íè,äCùWªÛ¸ªò`!Q%¸B3cÌ`æø/8EÅ‡¯€9ZRÂèmàÓ_+|X8¹†r¡¤ú²2}…xĞïÖvkÇ$ûkÒEÁ´¸~áø&8G=D;ò0àı/¦Zôfğ0ÜM<fê©G`Åì©Pİ.O(urDf¯vÀš±fæöÖ^‚Ÿàk´àiëâ4ó~›ı¥»´\ß]SDËY8¿¡­	MÈçm_Í¹»¯Çõ¶²ö?V€ €°Äê+gX´7óÂ¡±ßÍ.…É\ü'åfÎ-âª=£'¦{¨²:oÿQúİ‹ùmÇ0ÆÅô¤–¡1“Ï_ÈĞO·÷ŠQ59ÇM¯£j{¸„ŸJÒ7å\n•¬bÓ}şuÈ;½S$Ÿ*Šdmãwnò¹	2]¨ÌCî™8öVJÙjæôİü(]N]½„0¶sÉQøCL:¦²F0œÚÖaE"¿ñW'§İS"–Á‡ÙCws®¸ÏpõÜÆıŞš5ÚbŒ½                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       Ïwö!9§ãM)ùŸİmÁ²t]*pÉÀlp,øÁ‡“oªÕ<ç6C©Šs\‚1Ø™‰•	€å¸½±¼YDÒ¤,N“¤öa¡³[u=°;WpËìh·Å+å-ŒàÖÓ¥eæ@™.ˆË›Ctñ ÒÖ¡‹ı—'¾h¡³É^åºYíƒØˆï}_Œíßí²NdúkŸh‚OÖ½ªá&•¢,tbz¿­öYŒÎîkâÚ`8¬K?[Ó\6À1Ëöò·u·cg¿½¦àÛüÛƒU°¦šÄ¶-e¹ÔÄ]0ñÅŒ¨¾Æy’PÖm–Ad¤šµQŒ_ãõì˜©û†¥NtĞ°à‰OCÖE0wf8™NOPP›%ñF!¥¬ÆFg{rõşD´–kÊ¡”vÒømx·ú°¡ ¥ïş®·böæ†$UFQ‹†è‘S×Y"†â{ª2_/Ësï"âåWİym€T #öæ»\çö>AuİÛõ^=¦Ğ è2%m¢kÎ`“DíÙ:Ti®…];‘z›‡¹Òø“˜ÄßŞ›G’ğö-NUûšnTàf"5dVˆÎv{Úz24\<ì LºWOÛÈFí%>Eø·"C—+HX•m£ØÎœ›¯¾êÜ*ïE8‚A8—ã†¦‰P›óÖÙ$.Ë³%ÿM„/tIŒ¨áYësÍ>óÔ£Ò W-NäÍ™?ÎE=_)|Üfo4›îw±LõkçÓÑÓ}6T;=q­wk`‡ctùz¤³¶ßN4éGRNeÁÈAt78¡=~ö í»$ÜäÓ'È9º:¯ü	Ëêy1{º1İ	Ş'Ñk	ĞŸÏ‘!öa‹õa8I`åìR sV²ˆv\};	£VÛ.Ö~›"÷ñ¢áØx‰ağ-©¤>õ^õBy à½
-Sx×ñ6Wv.ê¿Š°I|”…¡ä°SÄèm©úË£–´l#äï`ú)']l¢æüd½s³a½°Ñ¦ƒBç ıÑ±Nÿ5 ` ùgºêA–=‘?uE´ÎD¹şç<j£Q…³·ĞÇïÂâyó(
-*‰•mÅl±Äİ™83Î6cØà†ú‘-êuÂ¦¢æadÁã½î‰¶¾”Â.¦›Updw¶ˆCKw´d¸çÎGÓxœÎ'ğ»A±”Ñ®o$òØ¯Ş8±×7+¡Ÿ'«‰îÖj#+›„[;î¤‰•N„Š_Ä-t,#"¾lWxwºÜœk/ÆÏ_Nœ¡^­œ’~±¥Ú½@0ß/ ú\ÙfİĞLpól\ĞşÂ¾°auaàC–SÚö7{Á.)ÚvÊÑrj}VÜı­ËWnîóä="j“ÁÜ–®/û/™Pæ*³´1ØÔ2†á3î÷³£ª8K4ÍômÓÜeY­¢Ù1şî*¡R*	}³Z°¾Dp«¥à¶êI|òıc“:|Iö~Xîç(/ª‹í;•ÍXtnlÜ½kEŒYæz2–!(—0Qaé.2ŞjvÓü±`sÚ(ÃóLæÁm`Tštô¡FÜäô“¹2ú+ƒüwèøÆ ƒ¥¨y'÷ÒÃ^Çù¢÷Ï4Ixe†ê}(kù¯²&t¦½3¦ãĞÛ`XY! tÑ#"Ş<Ô •nÌcÚ¢0Ë¹]G‹\Ã8É{&ĞM­®2}¯XıÎj‡¾+Ï¬;¯i9â•9ëş-ˆÏ “F›zæñòĞwt»ºÃÊO;Ò¡Dâ¦˜uåÏtªşıÇ¯´İßº¦Í‰!–ávïîµdWü§5¢Ñ±¡ÎF éëãp-Âş^;WÂzÜl’N¸`Õ˜•Í½è‡Q‚£ü¬2(7çLã!a¾Ô¤æİ7‚4.Á„¿GF¡S«4¾0d0+ì1ŞqQwºñˆIÚQïl•gëY†T<¹–J§¤®fs/Ìñä#8ƒÎÓµ;YjÕ‰·Á•6Õ ½æ&±õ²VÉEí„Î¸gBØ¢«½JÎjœê8÷:“5n¾M
-ƒqš7+òÊ»oî„\hC¹ÅÒ¤©oŞ*”U]¤ewßĞXŒ=Tà-È…Œ¿:/ŒXÀË–›5ìwaÁsD¬ >ƒÓbxå.!l+ @·L¢›à–=c7]4Ê õÂ\¢p—N˜£MÉzW>ÖX#RëëÙ¼dÒ¶¬³Èj;éöÕeJ¦ù¬xÂV%¼YÏ—ÊgÒSÑA¦ÊÕh¢íbŒSì}?A*XZÚ°™ññ9ù<R×|jšÂ|Î²œT­¶¦‡J|*}!ªGÙXÁùÑ¼ÉŠïb¡6p©°+x’STêü¹={E`†9cºá“ÙÊü—T}qV#oaÈ˜O‹Â	\K„Ah;óxò°S½2ñ<+\<š Ä’K“V®ÿ8’O#›Œ2å¹!yluÍãğh?'ÓĞ(·¼0I+^;ğÔ»×986\U!:-6O
-TÄªĞ‹øæí6­w´0ane‚K“®æ ²˜{pâÃDë\^j…à,»Ù{Î¤+Æ$G"ÏğP!ößvRm’CÜ<­A0µ,íÇµ6‡àŸ”ßi±yõÄ{ú‚ó<–EGümŠÉl“}™ÀPù?ÿc=Ãi§-×[åÑ±ã'ÄlÒ@                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       an'vüaËĞy*Zí½Â2õ¤_×†ÅÖ¿njl<¢"(g›àöú<R~¾§½tË˜5Ë& MWiíNÖ·¬Í ‘’CÍdÚt×~!²h‹„!5ÅPÏÙ€†¶’;Ulxfs[œü:;vŞµA—Ç­'À§J“™©Jq7xdäƒû‚ãæ"RsÊydQGÁ¡öi%î˜§&#&Ñ9§œ~¸ÒO€Îàg~Çdé¾d²ØK¢ "À&w_ùUP!J<¼‡ø&du&Ó8ôª]®SOpoºY£õ@8İ‚À#õ/›PÖ§\ŸW?Ì­v¡ˆYrn7ù¼’y%@ŸWñúÎ·cÑVÒ›”—íİÒ~v?Æ`©È/Mí¥89ÖC=×#I4—cıª$š¾xf±j[Z]dqŒ:Ôªvô`Eùç4>U‹Fi‚CÁQ0C33İ´õŸ×A†YäÎaSˆí*§`:<u^'”¶Á[dFÆÛ gèˆï­åégñ?°vmÓsAD¬+ö­~ø¾\Cÿri£<‹’#§ÏşÇÊê\·-‰Ñí‰¡¿Õòk'Áûö
-%ıíº‡v½f'}…[Ö7FÎ6mä¼e4ÃŞlg8:°ßDÿ³p¹ä“n{æITK1Êh¼ßS„‡?şìWÌ»òÁxZå³ù/q,SêãÊP_Ü*Âêê¡ÉF	ª´ÏÇWó1PÜùî¶.nÛá85ñÂ¯ç‚§œûä…§D>ıÆP¯R/ËGºÖ™ßá¬¿8Ö»¯şşÚ¹ïÚr€İ{"Vnò§½óÂ¨iºş0šoêû àŠa4yµæ¾… ‡Ö×Ù¿ëh«¨TZ
-FëÁ#kãç Á›+Œ(—ÂkÏXß f­m^‹†*$-uúPŸaô—µ:Çï($’[ï
-ZNs[»·N2¯»Ñ’?ÒÌÖË Êß@±(0Ÿ·´§×:_|ÒDAp´‡Ê¶±@JÄaœÅGö\ìì–{3 …
-ÓÉÿ_T9O]§@²¬(ÒYåÁ.94™5c$KÏËm¸ªï„;åîs{ÛKƒ²&saÊÜVşÔîÂ ¬ú›“M°Ü†3±{=ò‚rçN%c•TiÜCy_¶¾O×šKbdM?ûh@  !æbÒsK©µ€ÉöÁŒMS€UªşpsëÇ¡°
-/|@3ş['åM=ç3úh‹Ïe”Œİ:f`ÿÆcQŸ5ùcãÜÕ^ì/å.ü±kô~ÃôíÈbg!“ı±z	µÙÊ»¾˜²–Æ¼¯tş™€"
- ¤<KÍjØò¨ŠøQÎ6“[Ã-£•:’£Q‘*ô7ÂÅùş®²jàÚ?t ËHõ6œ¶´™`»•4`AÅ2Œ²·rFY+#UyÔçHÃ8S‚á=@óîŠ‹üÄó`ÛÜe€ÜHúôZ¿Ğ—QY­­ˆu;]ïz3Û`j^´z0^WŒÀfğ‰8×¤öG¦&ÁS,°ëudrnJrdñS¸çû×¯Ş€udHüÆ$´?‰óë‡±“!’ÚĞú¿cšulaC¨>Ên
-ìşt£`ÎÙñj2—‘[@îP†7:¶÷¸,ÜŠÓ{ÚÚ”Ä·‰ ÊšÁÀ˜jŸK?	o¹^˜IL¢øTñ9)\GÖ«Àı¬³j
-=¹hƒ]^õšRï?#é¿ãÉpU·¨¬[³MT—´qHç÷0l.yxoìi\ë4¥@Û„Õ[¯øÖÛ¦¶Áæë=à´N=¥B½´ŸÊÛªöÌ¡úeˆ;8a½Ë”ÿP~0îŠ[3ôf[0€Ü#M'âú[ş—:_yƒ<3°\$ùÒ)ÿı…Ì$§ß–ü†º·™P`ÖRzÁ”[“ğìÂI\é*4üLÍ_ù:¡<^g¹ÿ£â¡Qq˜¶£z“o€$Ÿ÷ğ*Ò†©ª…ÌŠH|çdcA^Qs‰¢ßı,§2°ÏºĞ,»,”¥}H’Jq½                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            û‡ŞC]Èv<4‰V¤0ÁïÇ˜ı­•ö¸±=}·JğûZÈ‹’Ğşæ5 3–æ©ßŒ¨’äMx*J~â…/¬«îÉ v˜5¦Âº*È\2çƒåÌ½k°×=åÑŠ9î¢
-?ÍÒÆ&d–nH**"·|MÏŸÉüi~Ê·Ì z1Ğ^õ…­cgˆï‹³HGbÍĞƒP  é!àb§Û_2`@t¨ÎªYÍˆ5K>}¥n@Ã]ÍâC\{}'¶^Ü§vAÄR{|ƒÚ˜ñ…‘É6œ…ë0Õ×Ÿ¦‚.¯|ùÿ¬À+!ôÇ®İ§W„œÔWz~á'âA+ZŞpûò
-BºqÑòÄ¦XĞ]˜8Îó!t÷wJ´/øW«èjñæ|%íK`lùI§uÍ:B[8m„‘Ì‰ºú¿ÛXƒËŠ%şß¡–€óEÈz¢qpÒäL±'>Ä¬¯4A°(x ¬ï6Ğè¹M£E6/c±€›¯ÇÁñ•Ÿ~‘‡Û|2×=ŸkÕsà´=6êt)inğcğ²;ğ?ãmXb«_úİÅX‘“õ6{*s/o®t~u’FtiKšI>p‚d{İ¥K5Ì{{)p˜ùì¶¡èx'Ó©H ·ÒÃ-0Ù¯Ä½À£‡4
-zı4Fªï=¸­ä¬q5Gn$ÆÃÿÒß1Ò}its—‚ŠúS-+Œôb	¯²b—LmÊf=2U|£‚	
-åjÍãŞ|lR&(ØâGocÇÏ€&ö¦ş~
-îãÎ'Œ{S|rì<§6¢l bZEiŸ¥¤Ğİñ–qŒ^ª’Ø±”®OÈ±~m
-%%‰Ëæ±tnX+³¼yÇe¦ÎŸ*mD¹6Ì¸Ú•å×+ÖƒMU‡Q…â*Î
-ã­‹ã®†xf¸	:ÎûŸ%h¹‚?Ö+ÉkÍNÉÀ.vÇ‘µFã]NÅùeR,)×ä\uV‹BA*ö"ë1èÄîhï&ˆÀúÌ%„[/°©DÂ¬åXKâÈz°Dm(`›á£W7Şä¥IÊš‡-¿HééÚËI¸Xã³öÏD—_Ã¬Æ_ØKaˆJ½Bşäş‚ŒÜî-v0ü£ù§R9â^ŒLº°¾ÓËı-0$V÷ë0,ĞgÁ·›ÛÃ‹y¤4ˆŸ?3‚2Ò„bÈØ-‡'Añh!şW“ñ›¶s`üí^£Æı>ä¯ÚVÕo×vrñX¶wU%!Õ˜ÿÕüçv®:tTAøOÌoªF»Ol·XÔˆ“MÉ]ÚUÓı-&èüûq¢¶¯¹ó*?_•Kıkûk€7/×‡òÑ­)ÆÖ¼–€ZË:Õ<yYhNİ9róƒ|KåQì7­­°ê¨ªXTLåñ¾ıFoây:Gon²fvÒV~Û„Ï"»ˆ*J‚q5€)Ilç*M+µLíÕÆØ³zÃ~zq42ü…5WÊ	Ğˆ|âÊŸÀğæ58K·’UŒñÛOãóÓ¶w±‰â~LàÈOr¹M%ß¶3¥NÅ›E¬?½Q'>j‰ı>÷‹fXoàÆ,®ˆK{–Ù `JÎD0š·úãá‰"±H„ÙC…—¿}³—IauõCŞÙª1º½™Cø?µâ%Ksµ×àmC'HäÃû;91Ü“ğa¾ ºòâa/ŸÏŠî¡ôÔêæD²f³\†¿'V¼N&Úõ«È>«ÚmGB…Àÿ oÉËÜ¬Â eÉK¥ f@Ş¼¡ãµÄ¨b«*|—µûO¯•³èeêç°‘Dñ¡êiÜ¤™™øñŞBüRPNF]ôàH•HTDÄÇ’¦ú‹
-Æ£×“]PeÅg*¹Áä›%Ü7úO§H°$×-öAgh¦š”ìyÙ#V¬Áy	øğ,0DZ3t‰ÁÔûÉdlXˆ2ÛíF‡-Ô«rê( íÁ~ä—W,]½liQFã_›üñ»w…ëê(½Î\¤?tXÅ÷:cfØxN}‚Ò7¤^46òÆQ}Áàw¯ˆŒ±o@èl{İÿß!€>MWÙº]HaÜ¢•Û˜b²|+õƒa°P’ÆÎ‚)ßg?,äRoTH N
-˜`öæi°¦´Ö_‹¹gšĞ£lÎğ¼A– ?²ë_ï_˜#cH]›ÓÁÃv÷öÏƒ:%Zy;øE ceá5WoÓièFÒ º‰iÅESmzwBÄÙ!ƒê ÊåsQ Kuša·²½ìBÓdïãnÒ<DŞ>ş€ñ9Åİºi5üéµú«ÏÖø.\ÜÎşf’_ÌOUlıÄDT;¼¯§˜øúXº¿úW­E—FZòmÅ`ëØYf·‰YÏOŞ/p7 tÇëáhí@«t…ÀEìÌgÓğñGV®­¡‘&b–*¶lRO¤Iôù‰üİ1^OÌ=ğh»º4œ¿be¹£‡cÄéd·ìN!¥^6j«9º`5¢,CÊMõè©l;_ë×oí‰ódBŞ}‘÷w R„”J‚*?ÛŸP§m @@â'—mõÅ
-Vé ù;FİXŞò$Ş™İ‰übñP¹Ğ]#ÕtQ*#ÄÂ™ÁCoÃZíqZÇP^YÍÜ8|'œY! L/¬jJÀ­N½&ÇU® Õ7î™ø|È ÓI„øâ¹ŞŒxşÛ?R ï»G&é9® *›¬i/L<KğÜH×)Î­¿ï[W½8±3A ™|Z  áŞn4…â‚i&¯İ¢í-›Å–º(­±Ï/mB.(éÆ@;ÁCÚ§ÁÀx3P[eÔ¼•4ºÂãËäx„à",)d¸¶4>ÅÁô÷<Á%ûıâ¶Ado®Os‡išÇŒâö2â¤ÜÿfÛ˜{îœm–NH¢õ”OŠ¸!íùºQ­ş.=ßõaö}’òf1ˆ8f¦í:7u¦ïË5ò°,/ƒö+ë¾îã˜¬K1m˜†Y6¾½ï8É9Ö‚ICİÂ ¸›A÷ÉKÚS:5q›ÿ$^v†ú´´D €LBhæ-¿
-ìiw|CaJÍÌòƒOºL÷ù;Ÿ=­z.µ•®¨=¹øYèåEot3¦};-û“nvÊÚşabwÒ¨\>ŠrúëÒÊÉŠWK…FŠ)5~•œ$R1!ÎhL:ä÷£P?ƒ°Ú3,ÃÆ$]1]/]æ^´ mÁ’¾?ÒWC-bÙ¦ÕòçıËPÌ³x3Œ×µ2|¡²å=‹|±3¾ã!ğçßş›ŠÙb§+GˆÅ(Prîâjœ!ÍÇ27ÅÉ‘evŞ¢ŸÎ9ªÃ¡ùûu¢b¨4€–Š[Ø>ÏùrTz§Uê°J>­ƒí$ê¿;L™±³	è—µÉb·	© ¼¤vXYA÷u}ä„–Ç”·[æ#ÇX ~{zÅƒÔBâ1İ†¾™A8óÿ&÷×"ÍÍŞª/ƒÏ&ª¶ª¢!Ä)fº¬B‰ÔÅ¤Î{îc6ov`i !¨éû°Y˜~Âè)/ü¼wzÄv›Gå_*¹ÉögG¡~Îºéßæ½ÔZKĞ/Ñ Â›
-ém?)½ÅÛ¬¿!—¦½Ú«İ{worüÇK>¹ûxÓzl2({bÅßº‹¢°üšìkPF´Š[Ît0w6¦GâFõ‹ÃH"éL¡Õ3È„j1<í(~ª°İ*³Û+¯MØñdäKZ–%á}–5©]ÿı¬¸—Òá«Ú¶FÚ=‹o†sü´sRä¯j]iÕ]GÏ”{â                                                                                                                                                                                                                                                                    
