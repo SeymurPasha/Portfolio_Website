@@ -2,7 +2,7 @@ import React from 'react'
 
 export default function Arrow(props) {
     return (
-        <div class={props.showArrow ? "arrow show" : "arrow"}>
+        <div className={props.showArrow ? "arrow show" : "arrow"}>
                 <span></span>
                 <span></span>
                 <span></span>
